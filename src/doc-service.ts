@@ -4,8 +4,31 @@ export class DocService {
   private indexUrl = "https://docs.monei.com/llms.txt";
   private keyToUrlMap: Map<string, string> = new Map();
   private urlToKeyMap: Map<string, string> = new Map();
+  private pageCache: Map<string, string> = new Map();
   private nextId = 1;
   private rawIndex: string = "";
+
+  private ALLOWED_DOMAINS = [
+    "docs.monei.com",
+    "api.monei.com",
+    "js.monei.com",
+    "graphql.monei.com",
+    "monei.com"
+  ];
+
+  /**
+   * Validates if a URL's domain is in the whitelist.
+   */
+  private isDomainAllowed(url: string): boolean {
+    try {
+      const parsedUrl = new URL(url);
+      return this.ALLOWED_DOMAINS.some(domain => 
+        parsedUrl.hostname === domain || parsedUrl.hostname.endsWith("." + domain)
+      );
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Initializes the service by fetching the index.
@@ -22,9 +45,10 @@ export class DocService {
    * Processes text by replacing markdown links with "Title [Key]" and registering the mapping.
    */
   private processText(text: string): string {
-    // Regex to find all [Title](URL) patterns
-    // Specifically target docs.monei.com links
-    return text.replace(/\[([^\]]+)\]\((https:\/\/docs\.monei\.com\/[^)]+)\)/g, (match, title, url) => {
+    // Regex to find all [Title](URL) patterns.
+    // Changed to support all https? links, including subdomains or external docs (like Spreedly/Channex),
+    // and to safely ignore optional markdown titles (e.g., "Title") inside the parenthesis.
+    return text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"]+)(?:[\s"][^)]*)?\)/g, (match, title, url) => {
       let key = this.urlToKeyMap.get(url);
       if (!key) {
         key = `#ref${this.nextId++}`;
@@ -43,13 +67,23 @@ export class DocService {
   }
 
   async _getCleanPage(url: string) {
+    if (this.pageCache.has(url)) {
+      return this.pageCache.get(url)!;
+    }
+
+    if (!this.isDomainAllowed(url)) {
+      return `Error: Security Block. The domain of the requested URL (${url}) is not in the allowed list for the MONEI Doc-Bot. To maintain security and focus, I can only fetch documentation from verified MONEI domains and partners.`;
+    }
+
     const response = await fetch(url);
     if (!response.ok) {
       return `Error: Failed to fetch page at ${url}: ${response.statusText}`;
     }
 
     const content = await response.text();
-    return this.processText(content);
+    const cleanContent = this.processText(content);
+    this.pageCache.set(url, cleanContent);
+    return cleanContent;
   }
 
   /**
@@ -76,6 +110,16 @@ export class DocService {
    */
   getAvailableKeys(): string[] {
     return Array.from(this.keyToUrlMap.keys());
+  }
+
+  /**
+   * Replaces symbolic references (#ref123) with their original URLs in the provided text.
+   */
+  resolveReferences(text: string): string {
+    // Regex to find #ref and following digits
+    return text.replace(/#ref\d+/g, (key) => {
+      return this.keyToUrlMap.get(key) || key;
+    });
   }
 }
 

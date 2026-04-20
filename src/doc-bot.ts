@@ -9,6 +9,7 @@ import {
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { DocService } from "./doc-service.js";
 
 const client = new BedrockRuntimeClient({
@@ -19,24 +20,27 @@ const modelId = process.env.LLM_MODEL_ID || "eu.anthropic.claude-haiku-4-5-20251
 
 const docService = new DocService();
 
+const MAX_AGENT_CALLS = parseInt(process.env.MAX_AGENT_CALLS || "5", 10);
+const MAX_HISTORY_MESSAGES = parseInt(process.env.MAX_HISTORY_MESSAGES || "10", 10);
+
 // Simple Observability Flag
 const isObservabilityEnabled = process.argv.includes("--observe") || process.argv.includes("-o");
 
 const toolConfig: ToolConfiguration = {
   tools: [
-    {
-      toolSpec: {
-        name: "list_available_docs",
-        description: "Returns a summarized list of all available documentation pages at MONEI. Use this to identify which page to fetch for more details.",
-        inputSchema: {
-          json: {
-            type: "object",
-            properties: {},
-            required: []
-          }
-        }
-      }
-    },
+    // {
+    //   toolSpec: {
+    //     name: "list_available_docs",
+    //     description: "Returns a summarized list of all available documentation pages at MONEI. Use this to identify which page to fetch for more details.",
+    //     inputSchema: {
+    //       json: {
+    //         type: "object",
+    //         properties: {},
+    //         required: []
+    //       }
+    //     }
+    //   }
+    // },
     {
       toolSpec: {
         name: "get_doc_content",
@@ -74,7 +78,7 @@ ${index}
 `;
 
 async function main() {
-  console.log("--- MONEI AI Doc-Bot ---");
+  console.log("--- MONEI AI Doc-Agent ---");
   console.log("Initializing documentation service...");
 
   try {
@@ -89,12 +93,12 @@ async function main() {
   const messages: Message[] = [];
   const systemPrompt = getSystemPrompt(docService.getCleanIndex());
 
-  console.log("\nBot: Hello! I'm here to help you with MONEI integration. What can I do for you today?");
+  console.log("\nAgent: Hello! I'm here to help you with MONEI integration. What can I do for you today?");
 
   while (true) {
     const userInput = await rl.question("\nYou: ");
     if (userInput === "exit") {
-      console.log("Bot: Goodbye!");
+      console.log("Agent: Goodbye!");
       break;
     }
 
@@ -118,26 +122,47 @@ async function processBedrockInteraction(
   systemPrompt: string
 ) {
   try {
-    process.stdout.write("Bot is thinking...");
+    process.stdout.write("Agent is thinking...");
+
+    const getRequestMessages = () => {
+      if (messages.length <= MAX_HISTORY_MESSAGES) return messages;
+      let startIndex = messages.length - MAX_HISTORY_MESSAGES;
+      
+      // Step back to ensure we start at a 'user' message that is a text prompt, 
+      // not a tool result. This preserves the internal toolUse -> toolResult 
+      // sequences required by the Bedrock Converse API.
+      while (startIndex > 0) {
+        const msg = messages[startIndex];
+        const isUserTextOnly = msg?.role === "user" && !msg?.content?.some(c => c.toolResult);
+        if (isUserTextOnly) break;
+        startIndex--;
+      }
+      return messages.slice(startIndex);
+    };
+
+    let currentToolConfig: ToolConfiguration | undefined = toolConfig;
+    let callCount = 1;
 
     let response = await client.send(new ConverseCommand({
       modelId,
-      messages,
+      messages: getRequestMessages(),
       system: [{ text: systemPrompt }],
-      toolConfig
+      toolConfig: currentToolConfig
     }));
 
     // Clear thinking indicator
     process.stdout.write("\r\x1b[K");
 
     while (response.output?.message?.content?.some(c => c.toolUse)) {
+      callCount++;
       const outputMessage = response.output.message!;
       messages.push(outputMessage);
 
       // Print any text content the bot might have included with the tool call
       outputMessage.content?.forEach(block => {
         if (block.text) {
-          console.log(`Bot: ${block.text}\n[...]`);
+          const resolvedText = docService.resolveReferences(block.text);
+          console.log(`Agent: ${resolvedText}\n[...]`);
         }
       });
 
@@ -146,14 +171,20 @@ async function processBedrockInteraction(
 
       for (const block of toolUses) {
         const toolUse = block.toolUse!;
-        console.log(`[Tool] Calling ${toolUse.name}(${JSON.stringify(toolUse.input)})...`);
-
+        
         let resultText = "";
+
         if (toolUse.name === "list_available_docs") {
+          console.log(`\n🗂️  Agent is browsing the documentation index...`);
           resultText = docService.getCleanIndex();
         } else if (toolUse.name === "get_doc_content") {
           const pageKey = (toolUse.input as any).pageKey;
+          const url = docService.getUrlByKey(pageKey);
+          console.log(`\n📄 Agent is reading documentation page: ${url}...`);
+
           resultText = await docService.getCleanPage(pageKey);
+        } else {
+          console.log(`\n🔧 Calling ${toolUse.name}(${JSON.stringify(toolUse.input)})...`);
         }
 
         toolResults.push({
@@ -164,17 +195,24 @@ async function processBedrockInteraction(
         });
       }
 
+      if (callCount > MAX_AGENT_CALLS) {
+        toolResults.push({
+          text: "SYSTEM: You have reached the maximum number of tool calls permitted for this turn. You MUST now provide a conversational response to the user. If you need more information, explicitly tell the user you need more time and ask if they would like you to keep searching."
+        });
+        currentToolConfig = undefined;
+      }
+
       messages.push({
         role: "user",
         content: toolResults
       });
 
-      process.stdout.write("Bot is processing documentation...");
+      process.stdout.write("Agent is processing documentation...");
       response = await client.send(new ConverseCommand({
         modelId,
-        messages,
+        messages: getRequestMessages(),
         system: [{ text: systemPrompt }],
-        toolConfig
+        toolConfig: currentToolConfig
       }));
       process.stdout.write("\r\x1b[K");
     }
@@ -184,7 +222,8 @@ async function processBedrockInteraction(
       messages.push(finalMessage);
       finalMessage.content?.forEach(block => {
         if (block.text) {
-          console.log(`Bot: ${block.text}`);
+          const resolvedText = docService.resolveReferences(block.text);
+          console.log(`Agent: ${resolvedText}`);
         }
       });
     }
@@ -201,9 +240,13 @@ async function processBedrockInteraction(
  */
 async function saveObservationLog(messages: Message[]) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const fileName = `traces/obs-log-${timestamp}.json`;
+  const logDir = path.join(process.cwd(), "traces");
+  const fileName = path.join(logDir, `obs-log-${timestamp}.json`);
   
   try {
+    // Ensure the directory exists
+    await fs.mkdir(logDir, { recursive: true });
+    
     // Enrich messages with URLs for documentation lookups
     const enrichedMessages = messages.map(msg => {
       const enrichedContent = msg.content?.map(block => {
