@@ -65,6 +65,13 @@ export class DocService {
   }
 
   /**
+   * Returns the original URL for a given key. Useful for logging/observability.
+   */
+  getUrlByKey(key: string): string | undefined {
+    return this.keyToUrlMap.get(key);
+  }
+
+  /**
    * Lists all currently registered document keys.
    */
   getAvailableKeys(): string[] {

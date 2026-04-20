@@ -1,13 +1,14 @@
 import "dotenv/config";
-import { 
-  BedrockRuntimeClient, 
-  ConverseCommand, 
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
   type ToolConfiguration,
   type Message,
   type ContentBlock
 } from "@aws-sdk/client-bedrock-runtime";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import * as fs from "node:fs/promises";
 import { DocService } from "./doc-service.js";
 
 const client = new BedrockRuntimeClient({
@@ -17,6 +18,9 @@ const client = new BedrockRuntimeClient({
 const modelId = process.env.LLM_MODEL_ID || "eu.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 const docService = new DocService();
+
+// Simple Observability Flag
+const isObservabilityEnabled = process.argv.includes("--observe") || process.argv.includes("-o");
 
 const toolConfig: ToolConfiguration = {
   tools: [
@@ -72,7 +76,7 @@ ${index}
 async function main() {
   console.log("--- MONEI AI Doc-Bot ---");
   console.log("Initializing documentation service...");
-  
+
   try {
     await docService.initialize();
     console.log("Documentation index loaded.");
@@ -89,7 +93,7 @@ async function main() {
 
   while (true) {
     const userInput = await rl.question("\nYou: ");
-    if (["exit", "quit", "bye"].includes(userInput.toLowerCase())) {
+    if (userInput === "exit") {
       console.log("Bot: Goodbye!");
       break;
     }
@@ -102,13 +106,20 @@ async function main() {
     await processBedrockInteraction(messages, systemPrompt);
   }
 
+  if (isObservabilityEnabled) {
+    await saveObservationLog(messages);
+  }
+
   rl.close();
 }
 
-async function processBedrockInteraction(messages: Message[], systemPrompt: string) {
+async function processBedrockInteraction(
+  messages: Message[], 
+  systemPrompt: string
+) {
   try {
     process.stdout.write("Bot is thinking...");
-    
+
     let response = await client.send(new ConverseCommand({
       modelId,
       messages,
@@ -120,8 +131,15 @@ async function processBedrockInteraction(messages: Message[], systemPrompt: stri
     process.stdout.write("\r\x1b[K");
 
     while (response.output?.message?.content?.some(c => c.toolUse)) {
-      const outputMessage = response.output.message;
+      const outputMessage = response.output.message!;
       messages.push(outputMessage);
+
+      // Print any text content the bot might have included with the tool call
+      outputMessage.content?.forEach(block => {
+        if (block.text) {
+          console.log(`Bot: ${block.text}\n[...]`);
+        }
+      });
 
       const toolResults: any[] = [];
       const toolUses = outputMessage.content?.filter(c => c.toolUse) || [];
@@ -164,15 +182,58 @@ async function processBedrockInteraction(messages: Message[], systemPrompt: stri
     const finalMessage = response.output?.message;
     if (finalMessage) {
       messages.push(finalMessage);
-      const text = finalMessage.content?.[0]?.text;
-      if (text) {
-        console.log(`Bot: ${text}`);
-      }
+      finalMessage.content?.forEach(block => {
+        if (block.text) {
+          console.log(`Bot: ${block.text}`);
+        }
+      });
     }
 
   } catch (error: any) {
     console.error("\n--- Bedrock Error ---");
     console.error(error.message);
+  }
+}
+
+/**
+ * Saves the conversation history and tool usage to a JSON file.
+ * Enriches the log with resolved URLs for tool executions.
+ */
+async function saveObservationLog(messages: Message[]) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const fileName = `traces/obs-log-${timestamp}.json`;
+  
+  try {
+    // Enrich messages with URLs for documentation lookups
+    const enrichedMessages = messages.map(msg => {
+      const enrichedContent = msg.content?.map(block => {
+        if (block.toolUse && block.toolUse.name === "get_doc_content") {
+          const pageKey = (block.toolUse.input as any).pageKey;
+          const url = docService.getUrlByKey(pageKey);
+          if (url) {
+            return {
+              ...block,
+              toolUse: {
+                ...block.toolUse,
+                "url": url
+              }
+            };
+          }
+        }
+        return block;
+      });
+      return { ...msg, content: enrichedContent };
+    });
+
+    const logData = {
+      timestamp: new Date().toISOString(),
+      modelId,
+      messages: enrichedMessages
+    };
+    await fs.writeFile(fileName, JSON.stringify(logData, null, 2));
+    console.log(`\n[Observability] Session log saved to: ${fileName}`);
+  } catch (error) {
+    console.error("\n[Observability] Failed to save session log:", error);
   }
 }
 

@@ -4,7 +4,7 @@
   "description": "",
   "type": "module",
   "scripts": {
-    "start": "tsx src/doc-bot.ts",
+    "start": "tsx src/doc-bot.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock": "^3.1032.0",
