@@ -1,4 +1,4 @@
-// Global fetch is available in Node.js 18+
+
 
 export class DocService {
   private indexUrl = "https://docs.monei.com/llms.txt";
@@ -7,6 +7,8 @@ export class DocService {
   private pageCache: Map<string, string> = new Map();
   private nextId = 1;
   private rawIndex: string = "";
+
+  // A whitelist prevent the agent from trying to fetch website that it shouldn't
 
   private ALLOWED_DOMAINS = [
     "docs.monei.com",
@@ -22,7 +24,7 @@ export class DocService {
   private isDomainAllowed(url: string): boolean {
     try {
       const parsedUrl = new URL(url);
-      return this.ALLOWED_DOMAINS.some(domain => 
+      return this.ALLOWED_DOMAINS.some(domain =>
         parsedUrl.hostname === domain || parsedUrl.hostname.endsWith("." + domain)
       );
     } catch {
@@ -46,8 +48,6 @@ export class DocService {
    */
   private processText(text: string): string {
     // Regex to find all [Title](URL) patterns.
-    // Changed to support all https? links, including subdomains or external docs (like Spreedly/Channex),
-    // and to safely ignore optional markdown titles (e.g., "Title") inside the parenthesis.
     return text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"]+)(?:[\s"][^)]*)?\)/g, (match, title, url) => {
       let key = this.urlToKeyMap.get(url);
       if (!key) {
@@ -66,13 +66,16 @@ export class DocService {
     return this.processText(this.rawIndex);
   }
 
+  /**
+   * Fetches a specific page by its url, processes it, and returns the content.
+   */
   async _getCleanPage(url: string) {
     if (this.pageCache.has(url)) {
       return this.pageCache.get(url)!;
     }
 
     if (!this.isDomainAllowed(url)) {
-      return `Error: Security Block. The domain of the requested URL (${url}) is not in the allowed list for the MONEI Doc-Bot. To maintain security and focus, I can only fetch documentation from verified MONEI domains and partners.`;
+      return `Error: Security Block. The domain of the requested URL (${url}) is not in the allowed list for the MONEI doc-agent. To maintain security and focus, I can only fetch documentation from verified MONEI domains and partners.`;
     }
 
     const response = await fetch(url);
@@ -99,7 +102,7 @@ export class DocService {
   }
 
   /**
-   * Returns the original URL for a given key. Useful for logging/observability.
+   * Returns the original URL for a given key.
    */
   getUrlByKey(key: string): string | undefined {
     return this.keyToUrlMap.get(key);

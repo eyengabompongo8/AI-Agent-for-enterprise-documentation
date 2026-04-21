@@ -28,19 +28,6 @@ const isObservabilityEnabled = process.argv.includes("--observe") || process.arg
 
 const toolConfig: ToolConfiguration = {
   tools: [
-    // {
-    //   toolSpec: {
-    //     name: "list_available_docs",
-    //     description: "Returns a summarized list of all available documentation pages at MONEI. Use this to identify which page to fetch for more details.",
-    //     inputSchema: {
-    //       json: {
-    //         type: "object",
-    //         properties: {},
-    //         required: []
-    //       }
-    //     }
-    //   }
-    // },
     {
       toolSpec: {
         name: "get_doc_content",
@@ -62,16 +49,17 @@ const toolConfig: ToolConfiguration = {
   ]
 };
 
-const getSystemPrompt = (index: string) => `You are the MONEI AI Doc-Bot, a helpful assistant that answers merchant questions using MONEI's public documentation.
+const getSystemPrompt = (index: string) => `You are the MONEI AI Documentation Agent, a helpful assistant that answers merchant questions using MONEI's public documentation.
 
 Guidelines:
 1. ALWAYS use the provided tools to find accurate information. 
 2. Use the provided 'Documentation Index' to identify which page contains the answer.
-3. Call 'get_doc_content' with the relevant page key (e.g., '#ref123') to read the details.
-4. Your responses must be grounded ONLY in the provided documentation.
-5. If the documentation does not contain the answer, clearly state: "I don't know the answer to that based on the available documentation." Do NOT hallucinate.
-6. Documentation content may contain links formatted as 'Title [Key]'. You can use these keys to navigate to related documentation.
+3. Documentation content may contain links formatted as 'Title [Key]'. You can use these keys to navigate to related documentation.
+4. Call 'get_doc_content' with the relevant page key (e.g., '#ref123') to read the content of the linked document.
+5. Your responses must be grounded ONLY in the provided documentation.
+6. If the documentation does not contain the answer, clearly tell the user that you don't know the answer based on the available documentation. Do NOT hallucinate.
 7. Maintain a professional and helpful tone.
+8. Restrict the conversation to MONEI documentation. If the user drifts off-topic, politely redirect them back to MONEI-related queries.
 
 Documentation Index:
 ${index}
@@ -118,7 +106,7 @@ async function main() {
 }
 
 async function processBedrockInteraction(
-  messages: Message[], 
+  messages: Message[],
   systemPrompt: string
 ) {
   try {
@@ -127,10 +115,9 @@ async function processBedrockInteraction(
     const getRequestMessages = () => {
       if (messages.length <= MAX_HISTORY_MESSAGES) return messages;
       let startIndex = messages.length - MAX_HISTORY_MESSAGES;
-      
-      // Step back to ensure we start at a 'user' message that is a text prompt, 
-      // not a tool result. This preserves the internal toolUse -> toolResult 
-      // sequences required by the Bedrock Converse API.
+
+      // Step back to ensure the convo start at a 'user' message that is a text prompt, 
+      // not a tool result. Otherwise the Converse API might throw errors 
       while (startIndex > 0) {
         const msg = messages[startIndex];
         const isUserTextOnly = msg?.role === "user" && !msg?.content?.some(c => c.toolResult);
@@ -158,7 +145,7 @@ async function processBedrockInteraction(
       const outputMessage = response.output.message!;
       messages.push(outputMessage);
 
-      // Print any text content the bot might have included with the tool call
+      // Print any intermediate response that the agent might have included with a tool call
       outputMessage.content?.forEach(block => {
         if (block.text) {
           const resolvedText = docService.resolveReferences(block.text);
@@ -171,19 +158,18 @@ async function processBedrockInteraction(
 
       for (const block of toolUses) {
         const toolUse = block.toolUse!;
-        
+
         let resultText = "";
 
-        if (toolUse.name === "list_available_docs") {
-          console.log(`\n🗂️  Agent is browsing the documentation index...`);
-          resultText = docService.getCleanIndex();
-        } else if (toolUse.name === "get_doc_content") {
+        if (toolUse.name === "get_doc_content") {
           const pageKey = (toolUse.input as any).pageKey;
           const url = docService.getUrlByKey(pageKey);
           console.log(`\n📄 Agent is reading documentation page: ${url}...`);
 
           resultText = await docService.getCleanPage(pageKey);
         } else {
+          // Generic tool call handler
+          // get_doc_content is the only tool so this case should never happen
           console.log(`\n🔧 Calling ${toolUse.name}(${JSON.stringify(toolUse.input)})...`);
         }
 
@@ -199,6 +185,7 @@ async function processBedrockInteraction(
         toolResults.push({
           text: "SYSTEM: You have reached the maximum number of tool calls permitted for this turn. You MUST now provide a conversational response to the user. If you need more information, explicitly tell the user you need more time and ask if they would like you to keep searching."
         });
+        // Hide tools to ensure the agent sends a conversational response
         currentToolConfig = undefined;
       }
 
@@ -236,17 +223,16 @@ async function processBedrockInteraction(
 
 /**
  * Saves the conversation history and tool usage to a JSON file.
- * Enriches the log with resolved URLs for tool executions.
- */
+**/
 async function saveObservationLog(messages: Message[]) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logDir = path.join(process.cwd(), "traces");
   const fileName = path.join(logDir, `obs-log-${timestamp}.json`);
-  
+
   try {
     // Ensure the directory exists
     await fs.mkdir(logDir, { recursive: true });
-    
+
     // Enrich messages with URLs for documentation lookups
     const enrichedMessages = messages.map(msg => {
       const enrichedContent = msg.content?.map(block => {
