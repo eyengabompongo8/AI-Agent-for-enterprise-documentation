@@ -2,6 +2,12 @@
 
 An AI Documentation Agent built with TypeScript and the Amazon Bedrock Converse API. This CLI conversational agent acts as an integration assistant for MONEI developers, utilizing tool use to dynamically retrieve, navigate, and process live MONEI documentation.
 
+## Demo
+
+<video src="https://github.com/eyengabompongo8/AI-Agent-for-enterprise-documentation/blob/main/AI-Docs-Agent.mp4?raw=true" controls="controls" style="max-width: 100%;">
+</video>
+
+
 ## Features
 
 * **Dynamic Tool Use & Navigation**: Actively navigates the official MONEI documentation index (`llms.txt`) and fetches live markdown pages to answer deeply nested integration queries.
