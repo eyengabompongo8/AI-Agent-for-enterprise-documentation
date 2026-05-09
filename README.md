@@ -4,8 +4,11 @@ An AI Documentation Agent built with TypeScript and the Amazon Bedrock Converse 
 
 ## Demo
 
-<video src="https://github.com/eyengabompongo8/AI-Agent-for-enterprise-documentation/blob/main/AI-Docs-Agent.mp4?raw=true" controls="controls" style="max-width: 100%;">
-</video>
+
+
+https://github.com/user-attachments/assets/77dc9628-deba-4f5d-af3e-5e1ec762d8b8
+
+
 
 
 ## Features
